@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+
+# Generated data exports (personal workout/profile data — keep out of git)
+recent_workouts.json
+bench_history.json
+raw.json
+*.export.json
