@@ -7,4 +7,7 @@ __pycache__/
 recent_workouts.json
 bench_history.json
 raw.json
+workouts_full.json
 *.export.json
+CLAUDE.md
+HANDOFF.md
