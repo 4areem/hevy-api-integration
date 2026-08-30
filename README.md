@@ -1,22 +1,45 @@
-# Hevy API Integration
+# Hevy API Integration — giving an AI coach direct access to my training data
 
-A small Python client + CLI for the Hevy public API (https://api.hevyapp.com/docs/),
-built for pulling workout history and creating/updating routines programmatically
-(e.g. so a coaching assistant can read your logs and write routines back).
+A Python client + CLI for the [Hevy public API](https://api.hevyapp.com/docs/) that
+gives an AI assistant structured, programmatic access to my workout logs — so it can
+**read** every set I've ever logged plus my body-weight history, and **write** new
+routines straight back into the app.
+
+The idea: instead of copy-pasting screenshots of my training into a chat, I point an
+LLM (Claude) at this tool and let it work the data directly — pull my full history,
+find where a lift has stalled or a muscle group is under-volumed, and generate the next
+block as a routine that shows up in Hevy on my phone. It closes the loop between
+"analyze my training" and "program my next mesocycle."
 
 Requires **Hevy Pro** and an API key from https://hevy.com/settings?developer.
+
+## How I used it
+
+1. **Give the AI read access.** `--pull-range` / `--exercise-history` / `--body-measurements`
+   dump my real training history as clean JSON the model can reason over — one row per
+   set, newest first, with body-weight context bundled in.
+2. **Let it analyze.** The model reads the exported JSON directly: progression per lift,
+   stalls, volume imbalances between muscle groups, bodyweight trend against the training.
+3. **Write the program back.** It emits a routine JSON, and `--create-routine` /
+   `--update-routine` push it into Hevy — no manual entry, the workout is waiting in the
+   app next session.
+
+This is the small, boring integration layer that makes "AI as a coach" actually
+actionable instead of a chat transcript I have to re-type by hand.
+
+## Privacy — no personal data in this repo
+
+This repository is **only the access tooling**. My actual workout exports
+(`recent_workouts.json`, `bench_history.json`, `workouts_full.json`, etc.) and my API
+key are gitignored and never committed. Clone it, add your own Hevy Pro key, and it
+reads *your* data locally.
 
 ## Status
 
 - [x] Client library written (`hevy_client.py`)
 - [x] Tested against a real Hevy account (verified 2026-07-14 against live API)
-- [x] README finalized after testing
-
-Current focus is the **non-invasive / read-only** surface (pulling workouts,
-history, body measurements, routines, exercise templates). The write path
-(`create_routine` / `update_routine` / `create_workout`) is implemented and
-was smoke-tested once, but is intentionally not the focus yet — see
-"Verified against live API" below for exactly what was checked.
+- [x] Read path (history, measurements, routines, templates) fully working
+- [x] Write path (`create_routine` / `update_routine`) implemented + smoke-tested
 
 ## Setup
 
@@ -26,67 +49,49 @@ cp .env.example .env
 # edit .env and paste your real HEVY_API_KEY
 ```
 
-`.env` is gitignored - never commit your real key. `hevy_client.py` loads it
+`.env` is gitignored — never commit your real key. `hevy_client.py` loads it
 automatically (no `python-dotenv` dependency needed).
 
 ## CLI usage
 
 ```bash
-# Recent workouts
+# --- read (what the AI consumes) ---
 python hevy_client.py --pull-recent 10
-
-# Workouts in a date range
 python hevy_client.py --pull-range 2026-06-01 2026-07-13
-
-# Single workout by id
 python hevy_client.py --workout <workout_id>
-
-# Total workout count
 python hevy_client.py --workout-count
+python hevy_client.py --exercise-history 79D0BB3A     # one row per set, newest first
+python hevy_client.py --body-measurements             # weight log
+python hevy_client.py --user-info
 
-# Routines
+# --- exercise templates (needed to build routine entries) ---
+python hevy_client.py --list-exercise-templates
+python hevy_client.py --list-exercise-templates --query "bench"
+
+# --- write (what the AI produces) ---
 python hevy_client.py --list-routines
 python hevy_client.py --routine <routine_id>
 python hevy_client.py --create-routine my_routine.json
 python hevy_client.py --update-routine <routine_id> my_routine_update.json
-
-# Exercise templates (needed to build routine/workout exercise entries)
-python hevy_client.py --list-exercise-templates
-python hevy_client.py --list-exercise-templates --query "bench"
-
-# Full logged history for one exercise (one row per set, newest first)
-python hevy_client.py --exercise-history 79D0BB3A
-
-# Body-measurement log (weight, etc.)
-python hevy_client.py --body-measurements
-
-# Routine folders
 python hevy_client.py --list-routine-folders
 
-# Authenticated user info
-python hevy_client.py --user-info
-
-# Any command can be written to a file instead of stdout.
-# Export files are wrapped in an envelope that also bundles your measurement
-# context (weight log + profile) by default, so each file stands on its own:
+# Any command can be written to a file for the model to read. Exports are wrapped
+# in an envelope that bundles body-measurement context so each file stands alone:
 #   {"exported_at": ..., "measurements": {...}, "data": <command result>}
 python hevy_client.py --pull-recent 10 --out recent.json
-
-# Opt out of the bundled measurements to get just the raw result:
-python hevy_client.py --pull-recent 10 --no-measurements --out recent.json
+python hevy_client.py --pull-recent 10 --no-measurements --out recent.json   # raw only
 ```
 
 ## Using it as a library
 
 ```python
 from hevy_client import HevyClient
+from datetime import datetime
 
 client = HevyClient()  # reads HEVY_API_KEY from environment/.env
 
-recent = client.get_recent_workouts(count=5)
-history = client.get_workouts_in_range(
-    datetime(2026, 6, 1), datetime(2026, 7, 13)
-)
+recent  = client.get_recent_workouts(count=5)
+history = client.get_workouts_in_range(datetime(2026, 6, 1), datetime(2026, 7, 13))
 
 routine = client.create_routine(
     title="Push Day A",
@@ -107,7 +112,7 @@ routine = client.create_routine(
 )
 ```
 
-### JSON file schema for `--create-routine` / `--update-routine`
+### JSON schema for `--create-routine` / `--update-routine`
 
 ```json
 {
@@ -133,55 +138,30 @@ Set `type` must be one of: `normal`, `warmup`, `failure`, `dropset`.
 
 ## Notes / gotchas
 
-- **Hevy Pro required.** The API key endpoint (https://hevy.com/settings?developer)
-  only appears for Pro accounts.
-- **Pagination cap:** `/v1/workouts`, `/v1/routines`, and `/v1/exercise_templates`
-  cap `pageSize` at 10 per page. Bulk pulls (e.g. `--pull-range` over months)
-  make multiple requests; the client throttles itself slightly (0.25s) between
-  pages to be a good API citizen.
-- **No native date-range filter.** `get_workouts_in_range` paginates newest-first
-  and stops early once it pages past your start date. This assumes the API
-  keeps returning workouts newest-to-oldest (true as of the current spec).
-- **Routine updates replace, not merge, the exercises list.** If you're editing
-  one exercise in a routine, pass the *full* exercises array in your update
-  JSON, not just the one exercise you changed.
-- **Rate limits:** not formally published by Hevy as of this writing. Client
-  raises `HevyAPIError` with status 429 if you get throttled - back off and retry.
-- **This API is explicitly beta/unstable** per Hevy's own docs ("we make no
-  guarantees that we won't completely change the structure or abandon the
-  project entirely").
+- **Hevy Pro required.** The API-key page only appears for Pro accounts.
+- **Pagination cap:** `/workouts`, `/routines`, and `/exercise_templates` cap `pageSize`
+  at 10. Bulk pulls make multiple requests; the client throttles ~0.25s between pages.
+- **No native date-range filter.** `get_workouts_in_range` paginates newest-first and
+  stops once it pages past the start date.
+- **Routine updates replace, not merge.** Pass the *full* exercises array on update.
+- **Rate limits** aren't published; the client raises `HevyAPIError` on 429 — back off.
+- **Beta API.** Hevy's own docs warn the structure may change or be abandoned.
 
 ## Verified against live API (2026-07-14)
 
-Confirmed by real calls against a live Pro account. Findings folded into the
-client:
+Confirmed by real calls against a live Pro account, findings folded into the client:
 
-- **Read (non-invasive) — all working:** `--user-info` (wrapped in a `data`
-  envelope), `--workout-count`, `--pull-recent`, `--pull-range`, `--workout`,
-  `--list-routines`, `--routine`, `--list-exercise-templates [--query]`,
-  `--exercise-history`, `--body-measurements`, `--list-routine-folders`.
-- **`GET /workouts` envelope confirmed** as `{page, page_count, workouts}`.
-- **`--pull-range` end date is now inclusive of that whole day.** A date-only
-  end (`2026-07-14`) parses to midnight; the CLI now bumps it to end-of-day so
-  workouts logged later that day aren't silently dropped.
-- **`/routine_folders` returns folders under a `routines` key** (not
-  `routine_folders`) — a Hevy API inconsistency, handled in
-  `get_all_routine_folders`.
-- **`/exercise_history/{id}` is one row per set**, unpaginated, newest first.
-- **Body measurements are weight-only.** `/body_measurements` returns just
-  `weight_kg` (with a date); `/user/info` has no height. **Height and other
-  measurements are not available via the public API** — exports bundle the
-  weight log and note this gap.
-- **`--out` exports bundle measurements by default** in an
-  `{exported_at, measurements, data}` envelope (`--no-measurements` opts out).
-  `--body-measurements`/`--user-info` exports are written raw (they already
-  are the measurements).
-- **Write path (smoke-tested):** `POST /routines` and `PUT /routines/{id}` do
-  wrap the body in `{"routine": {...}}`, and `folder_id` is the correct field
-  name. `PUT` **requires the full `exercises` array** (400 otherwise) and
-  **rejects an empty `notes: ""` on an exercise** even though `POST` accepts
-  it — the client now strips empty exercise notes automatically on both.
-- **No delete/archive for routines.** `DELETE /routines/{id}` and
-  `POST /routines/{id}/archive` both 404 — routines can only be removed
-  manually in the app. (A throwaway routine "API Test - UPDATED (safe to
-  delete)" was left on the account by testing; delete it in the app.)
+- **Read — all working:** `--user-info`, `--workout-count`, `--pull-recent`,
+  `--pull-range`, `--workout`, `--list-routines`, `--routine`,
+  `--list-exercise-templates [--query]`, `--exercise-history`, `--body-measurements`,
+  `--list-routine-folders`.
+- `GET /workouts` envelope is `{page, page_count, workouts}`.
+- `--pull-range` end date is inclusive of the whole day (parses to end-of-day).
+- `/routine_folders` returns folders under a `routines` key (Hevy inconsistency, handled).
+- `/exercise_history/{id}` is one row per set, unpaginated, newest first.
+- **Body measurements are weight-only** — `/body_measurements` returns `weight_kg`;
+  height/other measurements aren't exposed by the public API.
+- **Write path:** `POST /routines` and `PUT /routines/{id}` wrap the body in
+  `{"routine": {...}}`; `PUT` requires the full `exercises` array and rejects an empty
+  exercise `notes: ""` (the client strips those automatically).
+- **No delete/archive** — `DELETE`/`archive` both 404; routines are removed only in-app.
